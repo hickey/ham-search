@@ -119,6 +119,14 @@ class crawler:
             return None
             #continue
             
+        # Enter the time that the URL was last visited
+        record = self.db.lastvisit.find_one({'url': url})
+        if record:
+            record['visitDate'] = datetime.datetime.now()
+            self.db.lastvisit.save(record)
+        else:
+            self.db.lastvisit.insert({'url': url, 'visitDate': datetime.datetime.now()})
+        
         soup = BeautifulSoup(xfer.read())
         return soup
         
