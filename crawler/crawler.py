@@ -38,19 +38,51 @@ class crawler:
         self.conn = pymongo.Connection(host=host, port=port)
         self.db = self.conn[database]
         
+        
+        self.threadCount = 1
+        self.refreshInterval = 0
+        
+        
         # Create the collections
-        #self.createCollections()
+        self.createCollections()
         
         
         
+    def setThreads(self, count):
+        self.threadCount = count
         
+        
+    def setRefreshInterval(self, interval):
+        self.refreshInterval = datetime.timedelta(seconds=self.timeToSecs(interval))
+        
+        
+        
+    def timeToSecs(self, timeSpec):
+        """
+        timeToSecs() will take a time specification and return the number of
+        seconds represented by the time specification. The time specification
+        consists of a decimal number ending in a single letter designating the
+        multiplier. Supported multipliers are m (minutes), h (hours), and d (days).
+        If the multiplier is not specified, then the time specification is
+        interpreted as seconds.
+        """
+        if timeSpec[-1] == 'm':
+            return (int(timeSpec[0:-1]) * 60)
+        elif timeSpec[-1] == 'h':
+            return (int(timeSpec[0:-1]) * 3600)
+        elif timeSpec[-1] == 'd':
+            return (int(timeSpec[0:-1]) * 86400)
+        else:
+            return (int(timeSpec))
         
     # Create the database tables
     def createCollections(self): 
-        self.linklist = self.db.linklist
-        self.wordlist = self.db.wordlist
-        self.linkinfo = self.db.linkinfo
-        self.seedlist = self.db.seedlist
+        # get a list of collections
+        collections = self.db.collection_names()
+        
+        #if not 'seedlist' in collections:
+        #    # create a capped collection
+        #    self.db.create_collection('seedlist', capped=True, size=100000)
         
   
   
@@ -65,13 +97,10 @@ class crawler:
     # first search to the given depth, indexing pages
     # as we go
     def crawl(self):
-        seeds=[]
+        seeds = []
         
         # Start to pull together the first group of URLs
-        uri = self.findNextURI()
-        seeds.append(uri['url'])
-        for url in self.collectSimilarURI(uri['url']):
-            seeds.append(url)
+        seeds.append(self.findNextURI()['url'])
         
         while len(seeds) > 0:
             seed = seeds.pop()
@@ -82,16 +111,14 @@ class crawler:
                     self.addToUrlList(link)
             
             if len(seeds) == 0:
-                uri = self.findNextURI()
-                seeds.append(uri['url'])
-                for url in self.collectSimilarURI(uri['url']):
-                    seeds.append(url)
+                seeds = self.collectSimilarURI(self.findNextURI()['url'])
+                
 
     # 
     def findNextURI(self):
         entry = self.db.seedlist.find_one()
         if entry:
-            self.db.seedlist.remove(entry['_id'])
+            self.db.seedlist.remove(entry)
         return entry
         
         
@@ -100,9 +127,9 @@ class crawler:
         Log.debug('%s --> %s' % (url, site))
         entries = self.db.seedlist.find({'url': re.compile(site, re.IGNORECASE)})
         
-        similar = []
+        similar = [url]
         for entry in entries:
-            print "found: %s" % entry['url']
+            self.db.seedlist.remove(entry)
             similar.append(entry['url'])
         
         Log.debug('Asked for similar to %s\nFound: %s' % (url, similar))
@@ -120,16 +147,20 @@ class crawler:
             #continue
             
         # Enter the time that the URL was last visited
+        self.updateLastVisitTime(url)
+        
+        soup = BeautifulSoup(xfer.read())
+        return soup
+        
+        
+    def updateLastVisitTime(self, url):
         record = self.db.linkinfo.find_one({'url': url})
         if record:
             record['lastVisitTime'] = datetime.datetime.now()
             self.db.linkinfo.save(record)
         else:
             self.db.linkinfo.insert({'url': url, 'lastVisitTime': datetime.datetime.now()})
-        
-        soup = BeautifulSoup(xfer.read())
-        return soup
-        
+            
 
     # extract text from page
     def extractText(self, soup):
@@ -153,16 +184,32 @@ class crawler:
         
     # add a link to the urllist collection
     def addToUrlList(self, link, priority=0):
-        # check to see if link is already on the list
-        if self.db.seedlist.find_one({'url': link}):
-            return
-            
+        Log.debug('addToUrlList(%s,%d)' % (link, priority))
         # things to ignore
         for ext in ignoreext:
             if link.endswith(ext):
+                Log.debug("-ext: %s" % link)
                 return
                 
+        # check to see if link is already on the list
+        if self.db.seedlist.find_one({'url': link}):
+            Log.debug("-seed: %s" % link)
+            return
+            
+        # if priority > 10 then ignore the lastVisitTime
+        if priority < 10:
+            # find the point in time to reject because of refresh interval
+            prior = datetime.datetime.now() - self.refreshInterval
+            test = self.db.linkinfo.find_one({'url': link, 
+                                      'lastVisitTime': {'$gte': prior}})
+            print "test = %s" % test
+            if self.db.linkinfo.find_one({'url': link, 
+                                      'lastVisitTime': {'$gte': prior}}):
+                Log.debug("-refresh: %s" % link)
+                return
+        
         Log.info('Adding to seeder list: %s' % link)
+        Log.debug("+ %s" % link)
         self.db.seedlist.insert({'url': link, 
                                  'foundDate': datetime.datetime.now(),
                                  'priority': priority})
@@ -434,13 +481,16 @@ if __name__ == '__main__':
             Option['execute'] = True
             
     
-    crawl = crawler(host=config.get('database', 'host'), 
-                    port=int(config.get('database', 'port')),
-                    database=config.get('database', 'name'))
+    sparky = crawler(host=config.get('database', 'host'), 
+                     port=int(config.get('database', 'port')),
+                     database=config.get('database', 'name'))
     
+    # Configure the sparky instance
+    sparky.setThreads(config.get('crawler', 'threads'))
+    sparky.setRefreshInterval(config.get('crawler', 'refresh'))
 
     if Option.has_key('delete_seed'):
-        while crawl.findNextURI():
+        while sparky.findNextURI():
             sys.stdout.write ('.')
         
             
@@ -448,11 +498,11 @@ if __name__ == '__main__':
     if Option.has_key('seedfile'):
         try:
             for line in fileinput.input(Option['seedfile']):
-                crawl.addToUrlList(line.strip())
+                sparky.addToUrlList(line.strip(), 10)
         except IOError, e:
             Log.error('Unable to read seedfile: %s', Option['seedfile'])
         
         
     if Option.has_key('execute'):
-        crawl.crawl()
+        sparky.crawl()
         
