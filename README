@@ -1,0 +1,32 @@
+
+
+
+Required Packages
+=================
+
+Python
+------
+Beautiful Soup
+
+
+
+Database Tables
+===============
+
+linklist: Harvested URLs
+            url
+            harvestDate
+            
+linkinfo: Info collected on each URI
+            url
+            lastVisit
+            category
+            visitSchedule
+            referenceLinks
+            
+wordlist: List of indexed words
+
+seedlist: Lost of URLs to be visited
+            url
+            foundDate
+            priority
