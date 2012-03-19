@@ -120,12 +120,12 @@ class crawler:
             #continue
             
         # Enter the time that the URL was last visited
-        record = self.db.lastvisit.find_one({'url': url})
+        record = self.db.linkinfo.find_one({'url': url})
         if record:
-            record['visitDate'] = datetime.datetime.now()
-            self.db.lastvisit.save(record)
+            record['lastVisitTime'] = datetime.datetime.now()
+            self.db.linkinfo.save(record)
         else:
-            self.db.lastvisit.insert({'url': url, 'visitDate': datetime.datetime.now()})
+            self.db.linkinfo.insert({'url': url, 'lastVisitTime': datetime.datetime.now()})
         
         soup = BeautifulSoup(xfer.read())
         return soup
