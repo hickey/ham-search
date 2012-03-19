@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-import sys,os
+import sys,os,re
 import logging
 import getopt
 import urllib2
@@ -11,10 +11,17 @@ import ConfigParser
 import pprint
 import fileinput
 import datetime
+import robotparser
 
 
 # Create a list of words to ignore
 ignorewords={'the':1,'of':1,'to':1,'and':1,'a':1,'in':1,'is':1,'it':1}
+
+ignoreext=['.pdf', '.doc', '.xls', '.docx', '.xlsx', '.ppt', '.pptx', '.jpg',
+           '.gif', '.pcx', '.bmp', '.tif', '.tiff', '.png', '.mov', '.fls', 
+           '.flv', '.zip', '.exe', '.dmg', '.iso', '.cdr', '.pkg', '.deb',
+           '.rpm', '.mp3', '.mpg', '.mpeg', '.avi', '.wmf', '.wav', '.gz',
+           '.tar', '.tgz', '.bz2', '.jpeg', ]
 
 
 Log = logging.getLogger('com.wt0f.search.crawler')
@@ -32,7 +39,7 @@ class crawler:
         self.db = self.conn[database]
         
         # Create the collections
-        self.createCollections()
+        #self.createCollections()
         
         
         
@@ -40,10 +47,10 @@ class crawler:
         
     # Create the database tables
     def createCollections(self): 
-        self.linklistCollection = self.db.linklist
-        self.wordlistCollection = self.db.wordlist
-        self.linkinfoCollection = self.db.linkinfo
-        self.seedlistCollection = self.db.seedlist
+        self.linklist = self.db.linklist
+        self.wordlist = self.db.wordlist
+        self.linkinfo = self.db.linkinfo
+        self.seedlist = self.db.seedlist
         
   
   
@@ -58,25 +65,50 @@ class crawler:
     # first search to the given depth, indexing pages
     # as we go
     def crawl(self):
-        while 1:
-            uri = self.findNextURI()
-            if not uri:
-                return
-            pagesoup = self.retreivePage(uri['url'])
+        seeds=[]
+        
+        # Start to pull together the first group of URLs
+        uri = self.findNextURI()
+        seeds.append(uri['url'])
+        for url in self.collectSimilarURI(uri['url']):
+            seeds.append(url)
+        
+        while len(seeds) > 0:
+            seed = seeds.pop()
+            pagesoup = self.retreivePage(seed)
             if pagesoup:
-                links = self.extractLinks(pagesoup, uri['url'])
+                links = self.extractLinks(pagesoup, seed)
                 for link in links:
                     self.addToUrlList(link)
-
+            
+            if len(seeds) == 0:
+                uri = self.findNextURI()
+                seeds.append(uri['url'])
+                for url in self.collectSimilarURI(uri['url']):
+                    seeds.append(url)
 
     # 
     def findNextURI(self):
-        entry = self.seedlistCollection.find_one()
+        entry = self.db.seedlist.find_one()
         if entry:
-            self.seedlistCollection.remove(entry['_id'])
+            self.db.seedlist.remove(entry['_id'])
         return entry
         
-
+        
+    def collectSimilarURI(self, url):
+        site = re.sub(r'(https?:)//([^\/]+).*', r'\1\/\/\2', url)
+        Log.debug('%s --> %s' % (url, site))
+        entries = self.db.seedlist.find({'url': re.compile(site, re.IGNORECASE)})
+        
+        similar = []
+        for entry in entries:
+            print "found: %s" % entry['url']
+            similar.append(entry['url'])
+        
+        Log.debug('Asked for similar to %s\nFound: %s' % (url, similar))
+        return similar
+        
+        
     # retreive a webpage
     def retreivePage(self, url):
         Log.info('Getting %s' % url)
@@ -113,10 +145,19 @@ class crawler:
         
     # add a link to the urllist collection
     def addToUrlList(self, link, priority=0):
+        # check to see if link is already on the list
+        if self.db.seedlist.find_one({'url': link}):
+            return
+            
+        # things to ignore
+        for ext in ignoreext:
+            if link.endswith(ext):
+                return
+                
         Log.info('Adding to seeder list: %s' % link)
-        self.seedlistCollection.insert({'url': link, 
-                              'foundDate': datetime.datetime.now(),
-                              'priority': priority})
+        self.db.seedlist.insert({'url': link, 
+                                 'foundDate': datetime.datetime.now(),
+                                 'priority': priority})
         
 ##  # Auxilliary function for getting an entry id and adding 
 ##  # it if it's not present
@@ -394,10 +435,14 @@ if __name__ == '__main__':
         while crawl.findNextURI():
             sys.stdout.write ('.')
         
+            
     # preload the seed list
     if Option.has_key('seedfile'):
-        for line in fileinput.input(Option['seedfile']):
-            crawl.addToUrlList(line.strip())
+        try:
+            for line in fileinput.input(Option['seedfile']):
+                crawl.addToUrlList(line.strip())
+        except IOError, e:
+            Log.error('Unable to read seedfile: %s', Option['seedfile'])
         
         
     if Option.has_key('execute'):
